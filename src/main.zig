@@ -2,6 +2,9 @@ const std = @import("std");
 const Io = std.Io;
 
 const fields_cnt = 19;
+const nbr_max = 6;
+
+var arena: std.mem.Allocator = undefined;
 
 const Resource = enum(u8) {
     Clay,
@@ -11,15 +14,17 @@ const Resource = enum(u8) {
     Wood,
     Desert,
 
+    const enumLen: u8 = @intFromEnum(@This().Desert) + 1;
+
     fn letter(res: @This()) [*:0]const u8 {
-        return @as([6][*:0]const u8, .{ "C", "S", "L", "G", "W", "D" })[@intFromEnum(res)];
+        return @as([enumLen][*:0]const u8, .{ "C", "S", "L", "G", "W", "D" })[@intFromEnum(res)];
     }
 
     fn cnt(res: @This()) u8 {
         return .cnt_list()[@intFromEnum(res)];
     }
     
-    fn cnt_list() [6]u8 {
+    fn cnt_list() [enumLen]u8 {
         return .{3, 4, 3, 4, 4, 1};
     }
 };
@@ -28,7 +33,7 @@ const Field = struct {
     id: u8,
     no: ?u8 = null,
     res: ?Resource = null,
-    nbr: [6]u8 = undefined,
+    nbr: [nbr_max]u8 = undefined,
     nbr_cnt: u8 = undefined,
     const neighbors: [fields_cnt][fields_cnt]bool = blk: {
         var nbr: [fields_cnt][fields_cnt]bool = @splat(@splat(false));
@@ -65,7 +70,7 @@ const Field = struct {
         var self = Field { .id = id, .nbr_cnt = 0 };
         for (0..fields_cnt) |i| {
             if (neighbors[id][i]) {
-                std.debug.assert(self.nbr_cnt < 6);
+                std.debug.assert(self.nbr_cnt < nbr_max);
                 self.nbr[self.nbr_cnt] = i;
                 self.nbr_cnt += 1;
             }
@@ -74,14 +79,14 @@ const Field = struct {
         return self;
     }
 
-    fn isNbr(self: Field, other: Field) bool {
+    fn isNbr(self: *const Field, other: *const Field) bool {
         std.debug.assert(self.id < fields_cnt);
         std.debug.assert(other.id < fields_cnt);
 
         return neighbors[self.id][other.id];
     }
 
-    fn nbrs(self: Field) []const u8 {
+    fn nbrs(self: *const Field) []const u8 {
         return self.nbr[0..self.nbr_cnt];
     }
 
@@ -127,12 +132,9 @@ fn print_map(T: type, f: *const[19]T) void {
         break :blk fmt_buf;
     };
     // there's no way around this until std.meta.Tuple gets fixed
-    const fields_tuple =  .{ 
-        f[0], f[1], f[2], f[3], f[4], f[5],
-        f[6], f[7], f[8], f[9], f[10], f[11],
-        f[12], f[13], f[14], f[15], f[16], f[17],
-        f[18], 
-    };
+    const fields_tuple =  .{ f[0], f[1], f[2], f[3], f[4], f[5], f[6], f[7],
+        f[8], f[9], f[10], f[11], f[12], f[13], f[14], f[15], f[16], f[17],
+        f[18], };
     std.debug.print(&fmt, fields_tuple);
 }
 
@@ -150,54 +152,85 @@ fn print_fields(flds: *[fields_cnt]Field) void {
     print_map(@TypeOf(f_str[0]), &f_str);
 }
 
-fn pick_resource(available: *const [6]i8) ?Resource {
-    var opt_a: [6]Resource = undefined;
-    var opt_cnt: u8 = 0;
+fn pick_resource(available: *const [Resource.enumLen]i8) ?Resource {
+    const ResOpt = struct {
+        res: Resource,
+        cnt: u8,
+
+        fn more_than(_: void, lhs: @This(), rhs: @This()) bool {
+            return lhs.cnt > rhs.cnt;
+        }
+    };
+    var opt_a: [Resource.enumLen]ResOpt = undefined;
+    var opts = std.ArrayListUnmanaged(ResOpt).initBuffer(&opt_a);
+
     for (available, 0..) |cnt, i| {
         if (cnt <= 0) continue;
-        opt_a[opt_cnt] = @enumFromInt(i);
-        opt_cnt += 1;
+        (opts.addOneBounded() catch unreachable).* = 
+            ResOpt{ .cnt = @intCast(cnt), .res = @enumFromInt(i) };
     }
 
-    if (opt_cnt == 0) return null;
+    if (opts.items.len == 0) return null;
 
-    return opt_a[random.random().uintAtMost(u8, opt_cnt - 1)];
+    std.Random.shuffle(random.random(), ResOpt, opts.items);
+    // block is stable
+    // std.sort.block(ResOpt, opts.items, {}, ResOpt.more_than);
+    // std.debug.print("{any}\n", .{opts.items});
+    return opts.items[0].res;
 }
 
-fn assign_resources(fp: []*Field, res_available: *[6]i8) u32 {
-    var clumps: u32 = 0;
-    var f = fp[0];
-    var res_candidates: [6]i8 = res_available.*;
+fn set_resource(field: *Field, res_available: *[Resource.enumLen]i8, res: Resource) void
+{
+    field.res = res;
+    res_available[@intFromEnum(res)] -= 1;
+    std.debug.assert(res_available[@intFromEnum(res)] >= 0);
+}
 
+fn assign_resource(fields: *[fields_cnt]Field, field: u8, res_available: *[Resource.enumLen]i8) u32 {
+    var clumps: u32 = 0;
+    var f = &fields[field];
+    var res_candidates: [Resource.enumLen]i8 = res_available.*;
+
+    // std.debug.print("Field {d}:\n", .{f.id});
+    // std.debug.print("{any}\n", .{f.nbrs()});
     for (f.nbrs()) |ni| {
-        const nbr = &fields[ni];
+        const nbr = fields[ni];
+        // std.debug.print("nbr has {?}\n", .{nbr.res});
         if (nbr.res != null) res_candidates[@intFromEnum(nbr.res.?)] = 0;
     }
 
-    f.res = pick_resource(&res_candidates) orelse blk: {
-        std.debug.print("field {d}, no unique resources left!\n", .{ f.id });
+    const res = pick_resource(&res_candidates) orelse blk: {
+        // std.debug.print("field {d}, no unique resources left!\n", .{ f.id });
         clumps += 1;
         break :blk pick_resource(res_available).?;
     };
 
-    res_available[@intFromEnum(f.res.?)] -= 1;
+    set_resource(f, res_available, res);
 
-    if (fp.len == 1) {
-        return clumps;
-    } else {
-        return clumps + assign_resources(fp[1..], res_available);
-    }
+    return clumps;
 }
 
-var fields: [fields_cnt]Field = blk: {
-    var _fields: [fields_cnt]Field = undefined;
-    for (0..fields_cnt) |i| _fields[i] = Field.init(i);
-    break :blk _fields;
-};
+fn assign_resources(fields: *[fields_cnt]Field, res_available: *[Resource.enumLen]i8) u32 {
+    const fp = blk: {
+        var _fp: [fields_cnt]*Field = undefined;
+        for (0..fields_cnt) |i| _fp[i] = &fields[i];
+        std.Random.shuffle(random.random(), *Field, &_fp);
+        break :blk _fp;
+    };
+
+    var clumps: u32 = 0;
+    for (fp) |field| {
+        if (field.res != null) continue;
+        clumps += assign_resource(fields, field.id , res_available);
+    }
+
+    return clumps;
+}
+
 
 pub fn main(init: std.process.Init) !void {
     // This is appropriate for anything that lives as long as the process.
-    const arena: std.mem.Allocator = init.arena.allocator();
+    arena = init.arena.allocator();
 
     // Accessing command line arguments:
     const args = try init.minimal.args.toSlice(arena);
@@ -220,34 +253,28 @@ pub fn main(init: std.process.Init) !void {
 
     try stdout_writer.flush(); // Don't forget to flush!
 
-    var fp = comptime blk: {
-        var _fp: [fields_cnt]*Field = undefined;
-        for (0..fields_cnt) |i| _fp[i] = &fields[i];
-        break :blk _fp;
+    const fields: [fields_cnt]Field = comptime blk: {
+        var _fields: [fields_cnt]Field = undefined;
+        for (0..fields_cnt) |i| _fields[i] = Field.init(i);
+        break :blk _fields;
     };
 
-    std.Random.shuffle(random.random(), *Field, &fp);
+    const res_assign_attempts = 16;
 
-    const test_array_s: [19][*:0]const u8 = @splat("o");
-    const test_array_d: [19]u8 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
-    print_map(@TypeOf(test_array_s[0]), &test_array_s);
-    print_map(@TypeOf(test_array_d[0]), &test_array_d);
+    for (0..res_assign_attempts) |_|{
+        var res_available: [Resource.enumLen]i8 = 
+            @as(*const [Resource.enumLen]i8, @ptrCast(&Resource.cnt_list())).*;
+        var fields_copy = fields;
 
-    for (&fields) |*f| {
-        std.debug.print("{f}\n", .{ f });
+        const clumps = assign_resources(&fields_copy, &res_available);
+        for (res_available) |cnt| std.debug.assert(cnt == 0);
+        if (clumps == 0) {
+            print_fields(&fields_copy);
+            std.debug.print("clumps = {d}\n", .{ clumps });
+            break;
+        }
+    } else {
+        std.debug.print("Cannot create map with seed {d}\n", .{ seed });
     }
-
-    var res_available: [6]i8 = @as(*const [6]i8, @ptrCast(&Resource.cnt_list())).*;
-    const clumps = assign_resources(&fp, &res_available);
-
-    print_fields(&fields);
-    std.debug.print("clumps = {d}\n", .{ clumps });
-
-    // const fmt = "{{{c}}}";
-    // comptime var fmt_s_buf: [fmt.len + 1]u8 = undefined;
-    // _ = comptime try std.mem.print(&fmt_s_buf, fmt, .{ '8' });
-    // // fmt_s_buf[result.len] = 0;
-    //
-    // std.debug.print("{s}", .{ @as([*:0]const u8, fmt_s_buf)});
 }
 
