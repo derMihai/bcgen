@@ -2,6 +2,9 @@ const std = @import("std");
 const Io = std.Io;
 
 const fields_cnt = 19;
+const res_fields_cnt = fields_cnt - 1;
+const yield_space = 58;
+const zones_cnt = 10;
 const nbr_max = 6;
 
 var arena: std.mem.Allocator = undefined;
@@ -27,14 +30,51 @@ const Resource = enum(u8) {
     fn cnt_list() [enumLen]u8 {
         return .{3, 4, 3, 4, 4, 1};
     }
+
+    fn expected_yield(res: @This()) f32 {
+        const yield: [enumLen]f32 = comptime blk: {
+            var a: [enumLen]u8 = undefined;
+            for (0..enumLen - 1) |i| {
+                a[i] = (@as(f32, yield_space) / res_fields_cnt) * cnt(@enumFromInt(i));
+            }
+            a[enumLen - 1] = 0;
+            break :blk a;
+        };
+
+        return yield[@intFromEnum(res)];
+    }
+};
+
+const Yield = struct {
+    no: u8 = undefined,
+    // yield: u8 = undefined,
+    cnt: u8 = undefined,
+    const yield_vals_cnt: u8 = 10;
+
+    fn yield(no: u8) u8 {
+        return switch (no) {
+             2 => 1,
+            12 => 1,
+             3 => 2,
+            11 => 2,
+             4 => 3,
+            10 => 3,
+             5 => 3,
+             9 => 4,
+             6 => 5,
+             8 => 5,
+             else => unreachable,
+        };
+    }
 };
 
 const Field = struct {
     id: u8,
-    no: ?u8 = null,
+    yield: ?u8 = null,
     res: ?Resource = null,
     nbr: [nbr_max]u8 = undefined,
     nbr_cnt: u8 = undefined,
+
     const neighbors: [fields_cnt][fields_cnt]bool = blk: {
         var nbr: [fields_cnt][fields_cnt]bool = @splat(@splat(false));
         const edges = [_][2]u8 {
@@ -90,14 +130,60 @@ const Field = struct {
         return self.nbr[0..self.nbr_cnt];
     }
 
-    pub fn format(self: *const Field, writer: anytype) !void {
+    fn nbrs_common(self: *const Field, other: *const Field, storage: *[nbr_max]u8) []const u8 {
+        var nbr_cnt: u8 = 0;
+        for (self.nbrs()) |ni|  {
+            for (other.nbrs()) |nj| {
+                if (ni == nj) {
+                    storage[nbr_cnt] = ni;
+                    nbr_cnt += 1;
+                    break;
+                }
+            }
+        }
+
+        if (self.isNbr(other)) {
+            std.debug.assert(nbr_cnt <= 4);
+            storage[nbr_cnt] = self.id; nbr_cnt +=1;
+            storage[nbr_cnt] = other.id; nbr_cnt +=1;
+        }
+
+        return storage[0..nbr_cnt];
+    }
+
+    pub fn format(self: *const @This(), writer: anytype) !void {
         try writer.print("{{ id = {d}, no = {?}, res = {?}, nbrs = {{ ", 
-            .{self.id, self.no, self.res});
+            .{self.id, self.yield, self.res});
         for (self.nbrs()) |n| {
             try writer.print("{d}, ", .{ n });
         }
 
         return writer.print("}}}}", .{});
+    }
+};
+
+
+const Zone = struct {
+    fields: [zone_size]u8 = undefined,
+
+    const zone_size = 4;
+    const initErr = error {badNeighbors};
+    const expected_yield: f32 = (@as(f32, yield_space) / res_fields_cnt) * zone_size;
+
+    fn init(a: *const Field, b: *const Field) initErr!@This() {
+        var nbr_a: [nbr_max]u8 = undefined;
+        const nbr = a.nbrs_common(b, &nbr_a);
+        return if (nbr.len == zone_size) Zone { .fields = nbr.* } else initErr.badNeighbors;
+    }
+
+    fn yield(self: *const Zone, fields: *const [fields_cnt]Field) u8 {
+        var sum: u8 = 0;
+        for (self.fields) |i| sum += Yield.yield(fields[i].yield.?);
+        return sum;
+    }
+
+    fn more_than(fields: *const [fields_cnt]Field, lhs: *const @This(), rhs: *const @This()) bool {
+        return lhs.yield(fields) > rhs.yield(fields);
     }
 };
 
@@ -141,15 +227,34 @@ fn print_map(T: type, f: *const[19]T) void {
 fn print_fields(flds: *[fields_cnt]Field) void {
     var f_str: [fields_cnt][*:0]const u8 = undefined;
     for (flds, 0..) |*f, i| {
-        if (f.res == null) {
-            f_str[i] = "";
-        }
-        else {
-            f_str[i] = f.res.?.letter();
-        }
+        f_str[i] = if (f.res != null) f.res.?.letter() else ""; 
     }
 
     print_map(@TypeOf(f_str[0]), &f_str);
+
+    var f_yield_no: [fields_cnt]u8 = undefined;
+    for (flds, 0..) |*f, i| {
+        if ((f.res == null) or (f.res.? == Resource.Desert)) {
+            f_yield_no[i] = 0;
+        }
+        else {
+            f_yield_no[i] = f.yield orelse 0;
+        }
+    }
+
+    print_map(@TypeOf(f_yield_no[0]), &f_yield_no);
+
+    var f_yield: [fields_cnt]u8 = undefined;
+    for (flds, 0..) |*f, i| {
+        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield == null)) {
+            f_yield[i] = 0;
+        }
+        else {
+            f_yield[i] = Yield.yield(f.yield.?);
+        }
+    }
+
+    print_map(@TypeOf(f_yield[0]), &f_yield);
 }
 
 fn pick_resource(available: *const [Resource.enumLen]i8) ?Resource {
@@ -227,6 +332,60 @@ fn assign_resources(fields: *[fields_cnt]Field, res_available: *[Resource.enumLe
     return clumps;
 }
 
+fn assign_yields(fields: *[fields_cnt]Field, 
+                 yields: *const [Yield.yield_vals_cnt]Yield,
+                 zones: *const [zones_cnt]Zone) u32 {
+    const fp = blk: {
+        var _fp: [fields_cnt]*Field = undefined;
+        for (0..fields_cnt) |i| _fp[i] = &fields[i];
+        std.Random.shuffle(random.random(), *Field, &_fp);
+        break :blk _fp;
+    };
+
+    const yields_nos = blk: {
+        var a: [res_fields_cnt]u8 = undefined;
+        var i: u8 = 0;
+        for (yields) |yield| {
+            for (0..yield.cnt) |_| {
+                a[i] = yield.no;
+                i += 1;
+            }
+        }
+        break :blk a;
+    };
+
+    var yi: u8 = 0;
+    for (fp) |field| {
+        std.debug.assert(field.res != null);
+        if (field.res == Resource.Desert) {
+            field.yield = @round(@as(f32, yield_space) / res_fields_cnt);
+            continue;
+        }
+
+        std.debug.assert(field.yield == null);
+
+        field.yield = yields_nos[yi];
+
+        yi += 1;
+    }
+
+    var zp = blk: {
+        var a: [zones_cnt]*const Zone = undefined;
+        for (zones, &a) |*p, *ap| ap.* = p;
+        break :blk a;
+    };
+
+    std.sort.block(*const Zone, &zp, fields, Zone.more_than);
+
+
+    for (zp) |z| {
+        std.debug.print("{d}, ", .{ z.yield(fields) });
+    }
+    std.debug.print("\n", .{});
+
+    return 0;
+}
+
 
 pub fn main(init: std.process.Init) !void {
     // This is appropriate for anything that lives as long as the process.
@@ -258,9 +417,39 @@ pub fn main(init: std.process.Init) !void {
         for (0..fields_cnt) |i| _fields[i] = Field.init(i);
         break :blk _fields;
     };
+    
+    const zones: [zones_cnt]Zone = comptime .{
+        try Zone.init(&fields[3], &fields[4]),
+        try Zone.init(&fields[4], &fields[5]),
+        try Zone.init(&fields[5], &fields[6]),
+        try Zone.init(&fields[7], &fields[8]),
+        try Zone.init(&fields[8], &fields[9]),
+        try Zone.init(&fields[9], &fields[10]),
+        try Zone.init(&fields[10], &fields[11]),
+        try Zone.init(&fields[12], &fields[13]),
+        try Zone.init(&fields[13], &fields[14]),
+        try Zone.init(&fields[14], &fields[15]),
+    };
+
+    const yields: [Yield.yield_vals_cnt]Yield = comptime .{
+        Yield{ .no =  2, .cnt = 1 },
+        Yield{ .no = 12, .cnt = 1 },
+        Yield{ .no =  3, .cnt = 2 },
+        Yield{ .no = 11, .cnt = 2 },
+        Yield{ .no =  4, .cnt = 2 },
+        Yield{ .no = 10, .cnt = 2 },
+        Yield{ .no =  5, .cnt = 2 },
+        Yield{ .no =  9, .cnt = 2 },
+        Yield{ .no =  6, .cnt = 2 },
+        Yield{ .no =  8, .cnt = 2 },
+    };
+
+    // std.debug.print("{any}\n", .{ zones });
+
+    const test_array_d: [19]u8 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
+    print_map(@TypeOf(test_array_d[0]), &test_array_d);
 
     const res_assign_attempts = 16;
-
     for (0..res_assign_attempts) |_|{
         var res_available: [Resource.enumLen]i8 = 
             @as(*const [Resource.enumLen]i8, @ptrCast(&Resource.cnt_list())).*;
@@ -268,11 +457,21 @@ pub fn main(init: std.process.Init) !void {
 
         const clumps = assign_resources(&fields_copy, &res_available);
         for (res_available) |cnt| std.debug.assert(cnt == 0);
+
+        if (clumps > 0) {
+            continue;
+        }
+
+        _ = assign_yields(&fields_copy, &yields, &zones);
+
+        print_fields(&fields_copy);
+
         if (clumps == 0) {
-            print_fields(&fields_copy);
             std.debug.print("clumps = {d}\n", .{ clumps });
             break;
         }
+
+
     } else {
         std.debug.print("Cannot create map with seed {d}\n", .{ seed });
     }
