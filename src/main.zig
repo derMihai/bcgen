@@ -515,43 +515,38 @@ fn assign_yields(fields: *[fields_cnt]Field,
     return diff;
 }
 
-// fn balance_res_yields(fields: *const [fields_cnt]Field) u8 {
-//     const ResYield = struct {
-//         res: Resource,
-//         flds: [4:fields_cnt]u8 = @splat(fields_cnt),
-//
-//         fn init(res: Resource) @This() {
-//             var self = @This() { .res = res };
-//
-//             var i: u8 = 0;
-//             for (fields) |*f| {
-//                 if (f.res == res)  {
-//                     self.flds[i] = f.id;
-//                     i += 1;
-//                 }
-//             }
-//
-//             return self;
-//         }
-//
-//         fn yield(self: *const @This()) u8 {
-//             var i: u8 = 0;
-//             var y: u8 = 0;
-//             while (self.flds[i] != fields_cnt) : (i += 1) {
-//                 y += fields[self.flds[i]].yield().?;
-//             }
-//             return y;
-//         }
-//     };
-//
-//     var res_yields = blk: {
-//         var a: [Resource.enumLen]ResYield = undefined;
-//         for (0..Resource.enumLen) |ri| {
-//             a[ri] = ResYield.init(@enumFromInt(ri));
-//         }
-//         break :blk a;
-//     };
-// }
+fn balance_res_yields(fields: *const [fields_cnt]Field) u8 {
+    const ResYield = struct {
+        res: Resource,
+        flds: Vec(u8, 4) = .{},
+
+        fn init(res: Resource) @This() {
+            var self = @This() { .res = res };
+
+            for (fields) |*f| {
+                if (f.res == res)  {
+                    self.flds.push(f.id) catch unreachable;
+                }
+            }
+
+            return self;
+        }
+
+        fn yield(self: *const @This()) u8 {
+            var y: u8 = 0;
+            for (self.flds.span()) |fid| y += fields[fid].yield();
+            return y;
+        }
+    };
+
+    var res_yields = blk: {
+        var a: [Resource.enumLen]ResYield = undefined;
+        for (0..Resource.enumLen) |ri| {
+            a[ri] = ResYield.init(@enumFromInt(ri));
+        }
+        break :blk a;
+    };
+}
 
 pub fn main(init: std.process.Init) !void {
     // In order to do I/O operations need an `Io` instance.
