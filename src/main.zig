@@ -4,9 +4,35 @@ const Io = std.Io;
 const fields_cnt = 19;
 const res_fields_cnt = fields_cnt - 1;
 const yield_space = 58;
-const zones_cnt = 10;
 const nbr_max = 6;
 const max_yield_diff = 3;
+
+const g_zones = [_]Zone {
+    Zone{ .fields = .{ 3, 0, 4 } },
+    Zone{ .fields = .{ 0, 4, 1 } },
+    Zone{ .fields = .{ 4, 1, 5 } },
+    Zone{ .fields = .{ 1, 5, 2 } },
+    Zone{ .fields = .{ 5, 2, 6 } },
+    Zone{ .fields = .{ 7, 3, 8 } },
+    Zone{ .fields = .{ 3, 8, 4 } },
+    Zone{ .fields = .{ 8, 4, 9 } },
+    Zone{ .fields = .{ 4, 9, 5 } },
+    Zone{ .fields = .{ 9, 5, 10 } },
+    Zone{ .fields = .{ 5, 10, 6 } },
+    Zone{ .fields = .{ 10, 6, 11 } },
+    Zone{ .fields = .{ 7, 12, 8 } },
+    Zone{ .fields = .{ 12, 8, 13 } },
+    Zone{ .fields = .{ 8, 13, 9 } },
+    Zone{ .fields = .{ 13, 9, 14 } },
+    Zone{ .fields = .{ 14, 10, 15 } },
+    Zone{ .fields = .{ 10, 15, 11 } },
+    Zone{ .fields = .{ 12, 16, 13 } },
+    Zone{ .fields = .{ 16, 13, 17 } },
+    Zone{ .fields = .{ 13, 17, 14 } },
+    Zone{ .fields = .{ 17, 14, 18 } },
+    Zone{ .fields = .{ 14, 18, 15 } },
+};
+const zones_cnt = g_zones.len;
 
 const Resource = enum(u8) {
     Clay,
@@ -52,13 +78,14 @@ const Yield = struct {
 
     fn yield(no: u8) u8 {
         return switch (no) {
+             0 => @round(@as(f32, yield_space) / res_fields_cnt),
              2 => 1,
             12 => 1,
              3 => 2,
             11 => 2,
              4 => 3,
             10 => 3,
-             5 => 3,
+             5 => 4,
              9 => 4,
              6 => 5,
              8 => 5,
@@ -165,7 +192,8 @@ const Field = struct {
 const Zone = struct {
     fields: [zone_size]u8 = undefined,
 
-    const zone_size = 4;
+    // const zone_size = 4;
+    const zone_size = 3;
     const initErr = error {badNeighbors};
     const expected_yield: f32 = (@as(f32, yield_space) / res_fields_cnt) * zone_size;
 
@@ -274,6 +302,22 @@ fn print_fields(flds: *[fields_cnt]Field) void {
     }
 
     print_map(@TypeOf(f_yield[0]), &f_yield);
+
+    var res_yields: [Resource.enumLen - 1]u8 = @splat(0);
+    var sum: u8 = 0;
+    for (flds) |f| {
+        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield == null)) {
+            continue;
+        }
+        res_yields[@intFromEnum(f.res.?)] += Yield.yield(f.yield.?);
+        sum += Yield.yield(f.yield.?);
+    }
+
+    std.debug.print("Resource yield:\n", .{});
+    for (@typeInfo(Resource).@"enum".field_names[0..Resource.enumLen - 1], 0..) |n, i| {
+        std.debug.print("  {s:<10} {d:>2}\n ", .{ n, res_yields[i] });
+    }
+    std.debug.print("Sum: {d}\n", .{ sum });
 }
 
 fn pick_resource(available: *const [Resource.enumLen]i8) ?Resource {
@@ -380,13 +424,15 @@ fn assign_yields(fields: *[fields_cnt]Field,
         for (fp) |field| {
             std.debug.assert(field.res != null);
             if (field.res == Resource.Desert) {
-                field.yield = @round(@as(f32, yield_space) / res_fields_cnt);
+                // field.yield = @round(@as(f32, yield_space) / res_fields_cnt);
+                field.yield = 0;
                 continue;
             }
             field.yield = yields_nos[yi];
             yi += 1;
         }
 
+        std.debug.print("---\n", .{});
         for (0..8) |_| {
             var zp = blk: {
                 var a: [zones_cnt]*const Zone = undefined;
@@ -425,18 +471,19 @@ pub fn main(init: std.process.Init) !void {
         break :blk _fields;
     };
     
-    const zones: [zones_cnt]Zone = comptime .{
-        try Zone.init(&fields[3], &fields[4]),
-        try Zone.init(&fields[4], &fields[5]),
-        try Zone.init(&fields[5], &fields[6]),
-        try Zone.init(&fields[7], &fields[8]),
-        try Zone.init(&fields[8], &fields[9]),
-        try Zone.init(&fields[9], &fields[10]),
-        try Zone.init(&fields[10], &fields[11]),
-        try Zone.init(&fields[12], &fields[13]),
-        try Zone.init(&fields[13], &fields[14]),
-        try Zone.init(&fields[14], &fields[15]),
-    };
+    // const zones: [zones_cnt]Zone = comptime .{
+    //     try Zone.init(&fields[3], &fields[4]),
+    //     try Zone.init(&fields[4], &fields[5]),
+    //     try Zone.init(&fields[5], &fields[6]),
+    //     try Zone.init(&fields[7], &fields[8]),
+    //     try Zone.init(&fields[8], &fields[9]),
+    //     try Zone.init(&fields[9], &fields[10]),
+    //     try Zone.init(&fields[10], &fields[11]),
+    //     try Zone.init(&fields[12], &fields[13]),
+    //     try Zone.init(&fields[13], &fields[14]),
+    //     try Zone.init(&fields[14], &fields[15]),
+    // };
+
 
     const yields: [Yield.yield_vals_cnt]Yield = comptime .{
         Yield{ .no =  2, .cnt = 1 },
@@ -469,7 +516,7 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        const diff = assign_yields(&fields_copy, &yields, &zones);
+        const diff = assign_yields(&fields_copy, &yields, &g_zones);
 
         print_fields(&fields_copy);
         if (diff <= max_yield_diff) break;
