@@ -34,6 +34,59 @@ const g_zones = [_]Zone {
 };
 const zones_cnt = g_zones.len;
 
+fn Vec(T: type, comptime size: usize) type {
+    return struct {
+        a: [size]T = undefined,
+        len: usize = 0,
+
+        const Error = error { Full };
+
+        fn init(slice: []const T) @This() {
+            const range = @min(slice.len, size);
+
+            var self: @This() = .{};
+            for (slice[0..range], 0..) |item, i| self.a[i] = item;
+            self.len = range;
+
+            return self;
+        }
+
+        fn span(self: *@This()) []T {
+            return self.a[0..self.len];
+        }
+
+        fn push(self: *@This(), item: T) Error!void {
+            if (self.len == size) return Error.Full;
+            self.a[self.len] = item;
+            self.len += 1;
+        }
+    };
+}
+
+test "Vec" {
+    var va = Vec(u8, 3){};
+
+    try std.testing.expectEqual(va.len, 0);
+    try std.testing.expectEqual(va.a.len, 3);
+
+    try va.push(1);
+    try va.push(2);
+
+    try std.testing.expectEqual(va.span().len, 2);
+
+    try va.push(3);
+
+    try std.testing.expectError(Vec(u8, 3).Error.Full, va.push(4));
+
+    for (va.span(), 1..) |item, i| try std.testing.expectEqual(item, i);
+
+    var vb = Vec(u8, 4).init(&[_]u8 {1, 2, 3, 4, 5});
+    try std.testing.expectEqual(4, vb.span().len);
+
+    try std.testing.expectEqual(vb.span().len, 4);
+    for (vb.span(), 1..) |item, i| try std.testing.expectEqual(item, i);
+}
+
 const Resource = enum(u8) {
     Clay,
     Sheep,
@@ -96,7 +149,7 @@ const Yield = struct {
 
 const Field = struct {
     id: u8,
-    yield: ?u8 = null,
+    yield_no: ?u8 = null,
     res: ?Resource = null,
     nbr: [nbr_max]u8 = undefined,
     nbr_cnt: u8 = undefined,
@@ -179,12 +232,16 @@ const Field = struct {
 
     pub fn format(self: *const @This(), writer: anytype) !void {
         try writer.print("{{ id = {d}, no = {?}, res = {?}, nbrs = {{ ", 
-            .{self.id, self.yield, self.res});
+            .{self.id, self.yield_no, self.res});
         for (self.nbrs()) |n| {
             try writer.print("{d}, ", .{ n });
         }
 
         return writer.print("}}}}", .{});
+    }
+
+    fn yield(self: *const @This()) ?u8 {
+        return if (self.yield_no != null) Yield.yield(self.yield_no.?) else null;
     }
 };
 
@@ -205,7 +262,7 @@ const Zone = struct {
 
     fn yield(self: *const Zone, fields: *const [fields_cnt]Field) u8 {
         var sum: u8 = 0;
-        for (self.fields) |i| sum += Yield.yield(fields[i].yield.?);
+        for (self.fields) |i| sum += Yield.yield(fields[i].yield_no.?);
         return sum;
     }
 
@@ -224,13 +281,13 @@ const Zone = struct {
 
         for (lesser.fields[1..], greater.fields[1..]) |li, gi| {
             const lf = &fields[li]; const gf = &fields[gi];
-            if (Yield.yield(lf.yield.?) < Yield.yield(min.yield.?) and lf.res != .Desert) min = lf;
-            if (Yield.yield(gf.yield.?) > Yield.yield(max.yield.?) and gf.res != .Desert) max = gf;
+            if (Yield.yield(lf.yield_no.?) < Yield.yield(min.yield_no.?) and lf.res != .Desert) min = lf;
+            if (Yield.yield(gf.yield_no.?) > Yield.yield(max.yield_no.?) and gf.res != .Desert) max = gf;
         }
 
-        const tmp = min.yield;
-        min.yield = max.yield;
-        max.yield = tmp;
+        const tmp = min.yield_no;
+        min.yield_no = max.yield_no;
+        max.yield_no = tmp;
     }
 };
 
@@ -285,7 +342,7 @@ fn print_fields(flds: *[fields_cnt]Field) void {
             f_yield_no[i] = 0;
         }
         else {
-            f_yield_no[i] = f.yield orelse 0;
+            f_yield_no[i] = f.yield_no orelse 0;
         }
     }
 
@@ -293,11 +350,11 @@ fn print_fields(flds: *[fields_cnt]Field) void {
 
     var f_yield: [fields_cnt]u8 = undefined;
     for (flds, 0..) |*f, i| {
-        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield == null)) {
+        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield_no == null)) {
             f_yield[i] = 0;
         }
         else {
-            f_yield[i] = Yield.yield(f.yield.?);
+            f_yield[i] = Yield.yield(f.yield_no.?);
         }
     }
 
@@ -306,11 +363,11 @@ fn print_fields(flds: *[fields_cnt]Field) void {
     var res_yields: [Resource.enumLen - 1]u8 = @splat(0);
     var sum: u8 = 0;
     for (flds) |f| {
-        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield == null)) {
+        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield_no == null)) {
             continue;
         }
-        res_yields[@intFromEnum(f.res.?)] += Yield.yield(f.yield.?);
-        sum += Yield.yield(f.yield.?);
+        res_yields[@intFromEnum(f.res.?)] += Yield.yield(f.yield_no.?);
+        sum += Yield.yield(f.yield_no.?);
     }
 
     std.debug.print("Resource yield:\n", .{});
@@ -425,10 +482,10 @@ fn assign_yields(fields: *[fields_cnt]Field,
             std.debug.assert(field.res != null);
             if (field.res == Resource.Desert) {
                 // field.yield = @round(@as(f32, yield_space) / res_fields_cnt);
-                field.yield = 0;
+                field.yield_no = 0;
                 continue;
             }
-            field.yield = yields_nos[yi];
+            field.yield_no = yields_nos[yi];
             yi += 1;
         }
 
@@ -457,6 +514,43 @@ fn assign_yields(fields: *[fields_cnt]Field,
     return diff;
 }
 
+// fn balance_res_yields(fields: *const [fields_cnt]Field) u8 {
+//     const ResYield = struct {
+//         res: Resource,
+//         flds: [4:fields_cnt]u8 = @splat(fields_cnt),
+//
+//         fn init(res: Resource) @This() {
+//             var self = @This() { .res = res };
+//
+//             var i: u8 = 0;
+//             for (fields) |*f| {
+//                 if (f.res == res)  {
+//                     self.flds[i] = f.id;
+//                     i += 1;
+//                 }
+//             }
+//
+//             return self;
+//         }
+//
+//         fn yield(self: *const @This()) u8 {
+//             var i: u8 = 0;
+//             var y: u8 = 0;
+//             while (self.flds[i] != fields_cnt) : (i += 1) {
+//                 y += fields[self.flds[i]].yield().?;
+//             }
+//             return y;
+//         }
+//     };
+//
+//     var res_yields = blk: {
+//         var a: [Resource.enumLen]ResYield = undefined;
+//         for (0..Resource.enumLen) |ri| {
+//             a[ri] = ResYield.init(@enumFromInt(ri));
+//         }
+//         break :blk a;
+//     };
+// }
 
 pub fn main(init: std.process.Init) !void {
     // In order to do I/O operations need an `Io` instance.
@@ -499,6 +593,9 @@ pub fn main(init: std.process.Init) !void {
     };
 
     // std.debug.print("{any}\n", .{ zones });
+    //
+    // var test_sentinel_a: [*:0]u8 = .{1, 2, 3, 0, 4, 5, 5, 0};
+    // print("{d} {d} {d}\n", .{ test_sentinel_a.len, std.mem.span
 
     const test_array_d: [19]u8 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
     print_map(@TypeOf(test_array_d[0]), &test_array_d);
