@@ -45,7 +45,7 @@ fn Vec(T: type, comptime size: usize) type {
             const range = @min(slice.len, size);
 
             var self: @This() = .{};
-            for (slice[0..range], 0..) |item, i| self.a[i] = item;
+            for (slice[0..range], &self.a) |item, *dest| dest.* = item;
             self.len = range;
 
             return self;
@@ -67,6 +67,7 @@ test "Vec" {
     var va = Vec(u8, 3){};
 
     try std.testing.expectEqual(va.len, 0);
+    try std.testing.expectEqual(va.span().len, 0);
     try std.testing.expectEqual(va.a.len, 3);
 
     try va.push(1);
