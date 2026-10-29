@@ -6,8 +6,7 @@ const res_fields_cnt = fields_cnt - 1;
 const yield_space = 58;
 const zones_cnt = 10;
 const nbr_max = 6;
-
-var arena: std.mem.Allocator = undefined;
+const max_yield_diff = 3;
 
 const Resource = enum(u8) {
     Clay,
@@ -185,6 +184,26 @@ const Zone = struct {
     fn more_than(fields: *const [fields_cnt]Field, lhs: *const @This(), rhs: *const @This()) bool {
         return lhs.yield(fields) > rhs.yield(fields);
     }
+
+    fn balance(fields: *[fields_cnt]Field, za: *const @This(), zb: *const @This()) void {
+        const lesser, const greater = 
+            if (za.yield(fields) <= zb.yield(fields)) .{ za, zb } else .{ zb, za };
+
+        var min: *Field = &fields[lesser.fields[0]];
+        if (min.res == .Desert) min = &fields[lesser.fields[1]];
+        var max: *Field = &fields[greater.fields[0]];
+        if (max.res == .Desert) max = &fields[greater.fields[1]];
+
+        for (lesser.fields[1..], greater.fields[1..]) |li, gi| {
+            const lf = &fields[li]; const gf = &fields[gi];
+            if (Yield.yield(lf.yield.?) < Yield.yield(min.yield.?) and lf.res != .Desert) min = lf;
+            if (Yield.yield(gf.yield.?) > Yield.yield(max.yield.?) and gf.res != .Desert) max = gf;
+        }
+
+        const tmp = min.yield;
+        min.yield = max.yield;
+        max.yield = tmp;
+    }
 };
 
 
@@ -334,14 +353,7 @@ fn assign_resources(fields: *[fields_cnt]Field, res_available: *[Resource.enumLe
 
 fn assign_yields(fields: *[fields_cnt]Field, 
                  yields: *const [Yield.yield_vals_cnt]Yield,
-                 zones: *const [zones_cnt]Zone) u32 {
-    const fp = blk: {
-        var _fp: [fields_cnt]*Field = undefined;
-        for (0..fields_cnt) |i| _fp[i] = &fields[i];
-        std.Random.shuffle(random.random(), *Field, &_fp);
-        break :blk _fp;
-    };
-
+                 zones: *const [zones_cnt]Zone) u8 {
     const yields_nos = blk: {
         var a: [res_fields_cnt]u8 = undefined;
         var i: u8 = 0;
@@ -354,63 +366,58 @@ fn assign_yields(fields: *[fields_cnt]Field,
         break :blk a;
     };
 
-    var yi: u8 = 0;
-    for (fp) |field| {
-        std.debug.assert(field.res != null);
-        if (field.res == Resource.Desert) {
-            field.yield = @round(@as(f32, yield_space) / res_fields_cnt);
-            continue;
+    var diff: u8 = 0;
+
+    for (0..32) |_| shuffle: {
+        const fp = blk: {
+            var _fp: [fields_cnt]*Field = undefined;
+            for (0..fields_cnt) |i| _fp[i] = &fields[i];
+            std.Random.shuffle(random.random(), *Field, &_fp);
+            break :blk _fp;
+        };
+
+        var yi: u8 = 0;
+        for (fp) |field| {
+            std.debug.assert(field.res != null);
+            if (field.res == Resource.Desert) {
+                field.yield = @round(@as(f32, yield_space) / res_fields_cnt);
+                continue;
+            }
+            field.yield = yields_nos[yi];
+            yi += 1;
         }
 
-        std.debug.assert(field.yield == null);
+        for (0..8) |_| {
+            var zp = blk: {
+                var a: [zones_cnt]*const Zone = undefined;
+                for (zones, &a) |*p, *ap| ap.* = p;
+                break :blk a;
+            };
 
-        field.yield = yields_nos[yi];
+            std.sort.block(*const Zone, &zp, fields, Zone.more_than);
 
-        yi += 1;
-    }
+            for (zp) |z| std.debug.print("{d}, ", .{ z.yield(fields) });
+            std.debug.print("\n", .{});
 
-    var zp = blk: {
-        var a: [zones_cnt]*const Zone = undefined;
-        for (zones, &a) |*p, *ap| ap.* = p;
-        break :blk a;
-    };
+            diff = @intCast(@abs(@as(i16, zp[0].yield(fields)) - zp[zp.len - 1].yield(fields)));
+            if (diff <= max_yield_diff) {
+                break :shuffle;
+            }
 
-    std.sort.block(*const Zone, &zp, fields, Zone.more_than);
+            Zone.balance(fields, zp[0], zp[zp.len-1]);
+        }
+    } 
 
-
-    for (zp) |z| {
-        std.debug.print("{d}, ", .{ z.yield(fields) });
-    }
-    std.debug.print("\n", .{});
-
-    return 0;
+    return diff;
 }
 
 
 pub fn main(init: std.process.Init) !void {
-    // This is appropriate for anything that lives as long as the process.
-    arena = init.arena.allocator();
-
-    // Accessing command line arguments:
-    const args = try init.minimal.args.toSlice(arena);
-    for (args) |arg| {
-        std.log.info("arg: {s}", .{arg});
-    }
-
     // In order to do I/O operations need an `Io` instance.
     const io = init.io;
     var seed: u64 = undefined;
     io.random(@as(*[8]u8, @ptrCast(&seed)));
     random = std.Random.DefaultPrng.init(seed);
-
-    // Stdout is for the actual output of your application, for example if you
-    // are implementing gzip, then only the compressed bytes should be sent to
-    // stdout, not any debugging messages.
-    var stdout_buffer: [1024]u8 = undefined;
-    var stdout_file_writer: Io.File.Writer = .init(.stdout(), io, &stdout_buffer);
-    const stdout_writer = &stdout_file_writer.interface;
-
-    try stdout_writer.flush(); // Don't forget to flush!
 
     const fields: [fields_cnt]Field = comptime blk: {
         var _fields: [fields_cnt]Field = undefined;
@@ -449,7 +456,7 @@ pub fn main(init: std.process.Init) !void {
     const test_array_d: [19]u8 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
     print_map(@TypeOf(test_array_d[0]), &test_array_d);
 
-    const res_assign_attempts = 16;
+    const res_assign_attempts = 64;
     for (0..res_assign_attempts) |_|{
         var res_available: [Resource.enumLen]i8 = 
             @as(*const [Resource.enumLen]i8, @ptrCast(&Resource.cnt_list())).*;
@@ -462,16 +469,10 @@ pub fn main(init: std.process.Init) !void {
             continue;
         }
 
-        _ = assign_yields(&fields_copy, &yields, &zones);
+        const diff = assign_yields(&fields_copy, &yields, &zones);
 
         print_fields(&fields_copy);
-
-        if (clumps == 0) {
-            std.debug.print("clumps = {d}\n", .{ clumps });
-            break;
-        }
-
-
+        if (diff <= max_yield_diff) break;
     } else {
         std.debug.print("Cannot create map with seed {d}\n", .{ seed });
     }
