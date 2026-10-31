@@ -5,7 +5,8 @@ const fields_cnt = 19;
 const res_fields_cnt = fields_cnt - 1;
 const yield_space = 58;
 const nbr_max = 6;
-const max_yield_diff = 3;
+const max_zone_yield_diff = 3;
+const max_res_yield_diff = 1.0;
 
 const g_zones = [_]Zone {
     Zone{ .fields = .{ 3, 0, 4 } },
@@ -51,7 +52,11 @@ fn Vec(T: type, comptime size: usize) type {
             return self;
         }
 
-        fn span(self: *@This()) []T {
+        fn span(self: *const @This()) []const T {
+            return self.a[0..self.len];
+        }
+
+        fn span_mut(self: *@This()) []T {
             return self.a[0..self.len];
         }
 
@@ -361,21 +366,6 @@ fn print_fields(flds: *[fields_cnt]Field) void {
 
     print_map(@TypeOf(f_yield[0]), &f_yield);
 
-    var res_yields: [Resource.enumLen - 1]u8 = @splat(0);
-    var sum: u8 = 0;
-    for (flds) |f| {
-        if ((f.res == null) or (f.res.? == Resource.Desert) or (f.yield_no == null)) {
-            continue;
-        }
-        res_yields[@intFromEnum(f.res.?)] += Yield.yield(f.yield_no.?);
-        sum += Yield.yield(f.yield_no.?);
-    }
-
-    std.debug.print("Resource yield:\n", .{});
-    for (@typeInfo(Resource).@"enum".field_names[0..Resource.enumLen - 1], 0..) |n, i| {
-        std.debug.print("  {s:<10} {d:>2}\n ", .{ n, res_yields[i] });
-    }
-    std.debug.print("Sum: {d}\n", .{ sum });
 }
 
 fn pick_resource(available: *const [Resource.enumLen]i8) ?Resource {
@@ -503,8 +493,8 @@ fn assign_yields(fields: *[fields_cnt]Field,
             for (zp) |z| std.debug.print("{d}, ", .{ z.yield(fields) });
             std.debug.print("\n", .{});
 
-            diff = @intCast(@abs(@as(i16, zp[0].yield(fields)) - zp[zp.len - 1].yield(fields)));
-            if (diff <= max_yield_diff) {
+            diff = @intCast(@as(i16, zp[0].yield(fields)) - zp[zp.len - 1].yield(fields));
+            if (diff <= max_zone_yield_diff) {
                 break :shuffle;
             }
 
@@ -515,17 +505,17 @@ fn assign_yields(fields: *[fields_cnt]Field,
     return diff;
 }
 
-fn balance_res_yields(fields: *const [fields_cnt]Field) u8 {
+fn balance_res_yields(fields: *[fields_cnt]Field) f32 {
     const ResYield = struct {
         res: Resource,
-        flds: Vec(u8, 4) = .{},
+        flds: Vec(*Field, 4) = .{},
 
-        fn init(res: Resource) @This() {
+        fn init(res: Resource, fields2: *[fields_cnt]Field) @This() {
             var self = @This() { .res = res };
 
-            for (fields) |*f| {
+            for (fields2) |*f| {
                 if (f.res == res)  {
-                    self.flds.push(f.id) catch unreachable;
+                    self.flds.push(f) catch unreachable;
                 }
             }
 
@@ -534,18 +524,75 @@ fn balance_res_yields(fields: *const [fields_cnt]Field) u8 {
 
         fn yield(self: *const @This()) u8 {
             var y: u8 = 0;
-            for (self.flds.span()) |fid| y += fields[fid].yield();
+            for (self.flds.span()) |f| y += f.yield().?;
             return y;
+        }
+
+        fn yield_norm(self: *const @This()) f32 {
+            return @as(f32, self.yield()) / @as(u8, @intCast(self.flds.len));
+        }
+
+        // fn more_than(yield_fn: *const fn(*const @This()) f32 , lhs: *const @This(), rhs: *const @This()) bool {
+        //     return yield_fn(lhs) > yield_fn(rhs);
+        // }
+        fn less_than(_: void, lhs: *const @This(), rhs: *const @This()) bool {
+            return lhs.yield_norm() < rhs.yield_norm();
+        }
+
+        fn balance(self: *@This(), other: *@This()) void {
+            const greater, const lesser = if (self.yield_norm() >= other.yield_norm()) 
+                .{self, other} else .{other, self};
+
+            var gfp = &greater.flds.span_mut()[0];
+            var lfp = &lesser.flds.span_mut()[0];
+            for (greater.flds.span_mut()[1..]) |*f| {
+                if (f.*.yield().? > gfp.*.yield().?) gfp = f;
+            }
+            for (lesser.flds.span_mut()[1..]) |*f| {
+                if (f.*.yield().? < lfp.*.yield().?) lfp = f;
+            }
+
+            const tmp = gfp.*.res;
+            gfp.*.res = lfp.*.res;
+            lfp.*.res = tmp;
+
+            const tmpp = gfp.*;
+            gfp.* = lfp.*;
+            lfp.* = tmpp;
         }
     };
 
     var res_yields = blk: {
-        var a: [Resource.enumLen]ResYield = undefined;
-        for (0..Resource.enumLen) |ri| {
-            a[ri] = ResYield.init(@enumFromInt(ri));
-        }
+        var a: [Resource.enumLen - 1]ResYield = undefined;
+        for (0..Resource.enumLen - 1) |ri| a[ri] = ResYield.init(@enumFromInt(ri), fields);
         break :blk a;
     };
+
+    var ryp = blk: {
+        var a: [Resource.enumLen - 1]*ResYield = undefined;
+        for (&res_yields, &a) |*res, *dest| dest.* = res;
+        break :blk a;
+    };
+
+    const attempts: u8 = 10;
+    for (0..attempts) |_| {
+        std.sort.block(*ResYield, &ryp, {}, ResYield.less_than);
+
+        std.debug.print("Resource yield:\n", .{});
+        std.debug.print("  {s:<10} {s:>5} {s:>10}\n", .{"res", "yield", "norm yield"});
+        for (@typeInfo(Resource).@"enum".field_names[0..Resource.enumLen - 1], 0..) |n, i| {
+            std.debug.print("  {s:<10} {d:>5} {d:>10.2}\n ", .{ n, res_yields[i].yield(), res_yields[i].yield_norm() });
+        }
+
+        const diff = ryp[ryp.len - 1].yield_norm() - ryp[0].yield_norm();
+        if (diff <= max_res_yield_diff) {
+            break;
+        }
+        ryp[0].balance(ryp[ryp.len - 1]);
+    }
+
+    // std.debug.print("Sum: {d}\n", .{ sum });
+    return ryp[ryp.len - 1].yield_norm() - ryp[0].yield_norm();
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -611,8 +658,11 @@ pub fn main(init: std.process.Init) !void {
 
         const diff = assign_yields(&fields_copy, &yields, &g_zones);
 
+        const bal_diff = balance_res_yields(&fields_copy);
+        std.debug.print("res bal diff = {d}\n", .{ bal_diff });
+
         print_fields(&fields_copy);
-        if (diff <= max_yield_diff) break;
+        if (diff <= max_zone_yield_diff) break;
     } else {
         std.debug.print("Cannot create map with seed {d}\n", .{ seed });
     }
