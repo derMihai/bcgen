@@ -5,8 +5,9 @@ const fields_cnt = 19;
 const res_fields_cnt = fields_cnt - 1;
 const yield_space = 58;
 const nbr_max = 6;
-const max_zone_yield_diff = 3;
-const max_res_yield_diff = 1.0;
+const max_zone_yield_diff = 4;
+const max_res_yield_diff = 0.75;
+const clumps_max_after_balance = 1;
 
 const g_zones = [_]Zone {
     Zone{ .fields = .{ 3, 0, 4 } },
@@ -153,6 +154,19 @@ const Yield = struct {
     }
 };
 
+const g_yields: [Yield.yield_vals_cnt]Yield = .{
+    Yield{ .no =  2, .cnt = 1 },
+    Yield{ .no = 12, .cnt = 1 },
+    Yield{ .no =  3, .cnt = 2 },
+    Yield{ .no = 11, .cnt = 2 },
+    Yield{ .no =  4, .cnt = 2 },
+    Yield{ .no = 10, .cnt = 2 },
+    Yield{ .no =  5, .cnt = 2 },
+    Yield{ .no =  9, .cnt = 2 },
+    Yield{ .no =  6, .cnt = 2 },
+    Yield{ .no =  8, .cnt = 2 },
+};
+
 const Field = struct {
     id: u8,
     yield_no: ?u8 = null,
@@ -251,6 +265,11 @@ const Field = struct {
     }
 };
 
+const g_fields: [fields_cnt]Field = blk: {
+    var _fields: [fields_cnt]Field = undefined;
+    for (0..fields_cnt) |i| _fields[i] = Field.init(i);
+    break :blk _fields;
+};
 
 const Zone = struct {
     fields: [zone_size]u8 = undefined,
@@ -297,6 +316,61 @@ const Zone = struct {
     }
 };
 
+const ResYield = struct {
+    res: Resource,
+    flds: Vec(*Field, 4) = .{},
+
+    fn init(res: Resource, fields2: *[fields_cnt]Field) @This() {
+        var self = @This() { .res = res };
+
+        for (fields2) |*f| {
+            if (f.res == res)  {
+                self.flds.push(f) catch unreachable;
+            }
+        }
+
+        return self;
+    }
+
+    fn yield(self: *const @This()) u8 {
+        var y: u8 = 0;
+        for (self.flds.span()) |f| y += f.yield().?;
+        return y;
+    }
+
+    fn yield_norm(self: *const @This()) f32 {
+        return @as(f32, self.yield()) / @as(u8, @intCast(self.flds.len));
+    }
+
+    // fn more_than(yield_fn: *const fn(*const @This()) f32 , lhs: *const @This(), rhs: *const @This()) bool {
+    //     return yield_fn(lhs) > yield_fn(rhs);
+    // }
+    fn less_than(_: void, lhs: *const @This(), rhs: *const @This()) bool {
+        return lhs.yield_norm() < rhs.yield_norm();
+    }
+
+    fn balance(self: *@This(), other: *@This()) void {
+        const greater, const lesser = if (self.yield_norm() >= other.yield_norm()) 
+            .{self, other} else .{other, self};
+
+        var gfp = &greater.flds.span_mut()[0];
+        var lfp = &lesser.flds.span_mut()[0];
+        for (greater.flds.span_mut()[1..]) |*f| {
+            if (f.*.yield().? > gfp.*.yield().?) gfp = f;
+        }
+        for (lesser.flds.span_mut()[1..]) |*f| {
+            if (f.*.yield().? < lfp.*.yield().?) lfp = f;
+        }
+
+        const tmp = gfp.*.res;
+        gfp.*.res = lfp.*.res;
+        lfp.*.res = tmp;
+
+        const tmpp = gfp.*;
+        gfp.* = lfp.*;
+        lfp.* = tmpp;
+    }
+};
 
 var random: std.Random.DefaultPrng = undefined;
 
@@ -460,7 +534,7 @@ fn assign_yields(fields: *[fields_cnt]Field,
 
     var diff: u8 = 0;
 
-    for (0..32) |_| shuffle: {
+    for (0..1024) |_| shuffle: {
         const fp = blk: {
             var _fp: [fields_cnt]*Field = undefined;
             for (0..fields_cnt) |i| _fp[i] = &fields[i];
@@ -480,7 +554,7 @@ fn assign_yields(fields: *[fields_cnt]Field,
             yi += 1;
         }
 
-        std.debug.print("---\n", .{});
+        // std.debug.print("---\n", .{});
         for (0..8) |_| {
             var zp = blk: {
                 var a: [zones_cnt]*const Zone = undefined;
@@ -490,8 +564,8 @@ fn assign_yields(fields: *[fields_cnt]Field,
 
             std.sort.block(*const Zone, &zp, fields, Zone.more_than);
 
-            for (zp) |z| std.debug.print("{d}, ", .{ z.yield(fields) });
-            std.debug.print("\n", .{});
+            // for (zp) |z| std.debug.print("{d}, ", .{ z.yield(fields) });
+            // std.debug.print("\n", .{});
 
             diff = @intCast(@as(i16, zp[0].yield(fields)) - zp[zp.len - 1].yield(fields));
             if (diff <= max_zone_yield_diff) {
@@ -506,62 +580,6 @@ fn assign_yields(fields: *[fields_cnt]Field,
 }
 
 fn balance_res_yields(fields: *[fields_cnt]Field) f32 {
-    const ResYield = struct {
-        res: Resource,
-        flds: Vec(*Field, 4) = .{},
-
-        fn init(res: Resource, fields2: *[fields_cnt]Field) @This() {
-            var self = @This() { .res = res };
-
-            for (fields2) |*f| {
-                if (f.res == res)  {
-                    self.flds.push(f) catch unreachable;
-                }
-            }
-
-            return self;
-        }
-
-        fn yield(self: *const @This()) u8 {
-            var y: u8 = 0;
-            for (self.flds.span()) |f| y += f.yield().?;
-            return y;
-        }
-
-        fn yield_norm(self: *const @This()) f32 {
-            return @as(f32, self.yield()) / @as(u8, @intCast(self.flds.len));
-        }
-
-        // fn more_than(yield_fn: *const fn(*const @This()) f32 , lhs: *const @This(), rhs: *const @This()) bool {
-        //     return yield_fn(lhs) > yield_fn(rhs);
-        // }
-        fn less_than(_: void, lhs: *const @This(), rhs: *const @This()) bool {
-            return lhs.yield_norm() < rhs.yield_norm();
-        }
-
-        fn balance(self: *@This(), other: *@This()) void {
-            const greater, const lesser = if (self.yield_norm() >= other.yield_norm()) 
-                .{self, other} else .{other, self};
-
-            var gfp = &greater.flds.span_mut()[0];
-            var lfp = &lesser.flds.span_mut()[0];
-            for (greater.flds.span_mut()[1..]) |*f| {
-                if (f.*.yield().? > gfp.*.yield().?) gfp = f;
-            }
-            for (lesser.flds.span_mut()[1..]) |*f| {
-                if (f.*.yield().? < lfp.*.yield().?) lfp = f;
-            }
-
-            const tmp = gfp.*.res;
-            gfp.*.res = lfp.*.res;
-            lfp.*.res = tmp;
-
-            const tmpp = gfp.*;
-            gfp.* = lfp.*;
-            lfp.* = tmpp;
-        }
-    };
-
     var res_yields = blk: {
         var a: [Resource.enumLen - 1]ResYield = undefined;
         for (0..Resource.enumLen - 1) |ri| a[ri] = ResYield.init(@enumFromInt(ri), fields);
@@ -573,24 +591,30 @@ fn balance_res_yields(fields: *[fields_cnt]Field) f32 {
         for (&res_yields, &a) |*res, *dest| dest.* = res;
         break :blk a;
     };
+    std.sort.block(*ResYield, &ryp, {}, ResYield.less_than);
 
     const attempts: u8 = 10;
     for (0..attempts) |_| {
         std.sort.block(*ResYield, &ryp, {}, ResYield.less_than);
 
-        std.debug.print("Resource yield:\n", .{});
-        std.debug.print("  {s:<10} {s:>5} {s:>10}\n", .{"res", "yield", "norm yield"});
-        for (@typeInfo(Resource).@"enum".field_names[0..Resource.enumLen - 1], 0..) |n, i| {
-            std.debug.print("  {s:<10} {d:>5} {d:>10.2}\n ", .{ n, res_yields[i].yield(), res_yields[i].yield_norm() });
-        }
+        // for (ryp) |r| {
+        //     std.debug.print("{any} {d},", .{r.res, r.yield_norm()});
+        // }
+        // std.debug.print("\n", .{});
+
+        // std.debug.print("Resource yield:\n", .{});
+        // std.debug.print("  {s:<10} {s:>5} {s:>10}\n", .{"res", "yield", "norm yield"});
+        // for (@typeInfo(Resource).@"enum".field_names[0..Resource.enumLen - 1], 0..) |n, i| {
+        //     std.debug.print("  {s:<10} {d:>5} {d:>10.2}\n ", .{ n, res_yields[i].yield(), res_yields[i].yield_norm() });
+        // }
 
         const diff = ryp[ryp.len - 1].yield_norm() - ryp[0].yield_norm();
         if (diff <= max_res_yield_diff) {
             break;
         }
         ryp[0].balance(ryp[ryp.len - 1]);
+        std.sort.block(*ResYield, &ryp, {}, ResYield.less_than);
     }
-
     // std.debug.print("Sum: {d}\n", .{ sum });
     return ryp[ryp.len - 1].yield_norm() - ryp[0].yield_norm();
 }
@@ -602,67 +626,63 @@ pub fn main(init: std.process.Init) !void {
     io.random(@as(*[8]u8, @ptrCast(&seed)));
     random = std.Random.DefaultPrng.init(seed);
 
-    const fields: [fields_cnt]Field = comptime blk: {
-        var _fields: [fields_cnt]Field = undefined;
-        for (0..fields_cnt) |i| _fields[i] = Field.init(i);
-        break :blk _fields;
-    };
-    
-    // const zones: [zones_cnt]Zone = comptime .{
-    //     try Zone.init(&fields[3], &fields[4]),
-    //     try Zone.init(&fields[4], &fields[5]),
-    //     try Zone.init(&fields[5], &fields[6]),
-    //     try Zone.init(&fields[7], &fields[8]),
-    //     try Zone.init(&fields[8], &fields[9]),
-    //     try Zone.init(&fields[9], &fields[10]),
-    //     try Zone.init(&fields[10], &fields[11]),
-    //     try Zone.init(&fields[12], &fields[13]),
-    //     try Zone.init(&fields[13], &fields[14]),
-    //     try Zone.init(&fields[14], &fields[15]),
-    // };
-
-
-    const yields: [Yield.yield_vals_cnt]Yield = comptime .{
-        Yield{ .no =  2, .cnt = 1 },
-        Yield{ .no = 12, .cnt = 1 },
-        Yield{ .no =  3, .cnt = 2 },
-        Yield{ .no = 11, .cnt = 2 },
-        Yield{ .no =  4, .cnt = 2 },
-        Yield{ .no = 10, .cnt = 2 },
-        Yield{ .no =  5, .cnt = 2 },
-        Yield{ .no =  9, .cnt = 2 },
-        Yield{ .no =  6, .cnt = 2 },
-        Yield{ .no =  8, .cnt = 2 },
-    };
-
     // std.debug.print("{any}\n", .{ zones });
-    //
-    // var test_sentinel_a: [*:0]u8 = .{1, 2, 3, 0, 4, 5, 5, 0};
-    // print("{d} {d} {d}\n", .{ test_sentinel_a.len, std.mem.span
-
-    const test_array_d: [19]u8 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
-    print_map(@TypeOf(test_array_d[0]), &test_array_d);
+    // const test_array_d: [19]u8 = .{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 };
+    // print_map(@TypeOf(test_array_d[0]), &test_array_d);
 
     const res_assign_attempts = 64;
-    for (0..res_assign_attempts) |_|{
-        var res_available: [Resource.enumLen]i8 = 
-            @as(*const [Resource.enumLen]i8, @ptrCast(&Resource.cnt_list())).*;
-        var fields_copy = fields;
-
-        const clumps = assign_resources(&fields_copy, &res_available);
-        for (res_available) |cnt| std.debug.assert(cnt == 0);
-
-        if (clumps > 0) {
+    const map_attempts = 32;
+    for (0..map_attempts) |_|{
+        var res_available: [Resource.enumLen]i8  = undefined;
+        var fields_copy: [fields_cnt]Field = undefined;
+        for (0..res_assign_attempts) |_| {
+            res_available= @as(*const [Resource.enumLen]i8, @ptrCast(&Resource.cnt_list())).*;
+            fields_copy = g_fields;
+            const clumps = assign_resources(&fields_copy, &res_available);
+            if (clumps == 0) break;
+        } else {
             continue;
         }
 
-        const diff = assign_yields(&fields_copy, &yields, &g_zones);
+        // for (res_available) |cnt| std.debug.assert(cnt == 0);
+
+        const diff = assign_yields(&fields_copy, &g_yields, &g_zones);
+        if (diff > max_zone_yield_diff) continue;
 
         const bal_diff = balance_res_yields(&fields_copy);
-        std.debug.print("res bal diff = {d}\n", .{ bal_diff });
+        if (bal_diff > max_res_yield_diff) continue;
 
+        const clumps = blk: {
+            var c: u8 = 0;
+            for (fields_copy) |f| {
+                for (f.nbrs()) |n| {
+                    if (f.res.? == fields_copy[n].res.?) c += 1;
+                }
+            }
+            break :blk c / 2;
+        };
+
+        if (clumps > clumps_max_after_balance) continue;
+
+        var res_yields = blk: {
+            var a: [Resource.enumLen - 1]ResYield = undefined;
+            for (0..Resource.enumLen - 1) |ri| a[ri] = ResYield.init(@enumFromInt(ri), &fields_copy);
+            break :blk a;
+        };
+
+        std.debug.print("Resource yield:\n", .{});
+        std.debug.print("  {s:<10} {s:>5} {s:>11}\n", .{"res", "yield", "norm yield"});
+        for (@typeInfo(Resource).@"enum".field_names[0..Resource.enumLen - 1], 0..) |n, i| {
+            std.debug.print("  {s:<10} {d:>5} {d:>11.2}\n", .{ n, res_yields[i].yield(), res_yields[i].yield_norm() });
+        }
+
+        std.debug.print("clumps = {d}\n", .{ clumps });
+        std.debug.print("zone diff = {d}\n", .{ diff });
+        std.debug.print("resource diff (normalized) = {d}\n", .{ bal_diff });
         print_fields(&fields_copy);
-        if (diff <= max_zone_yield_diff) break;
+
+        break;
+        // if (diff <= max_zone_yield_diff) break;
     } else {
         std.debug.print("Cannot create map with seed {d}\n", .{ seed });
     }
