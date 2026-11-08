@@ -9,33 +9,6 @@ const max_zone_yield_diff = 4;
 const max_res_yield_diff = 0.75;
 const clumps_max_after_balance = 1;
 
-const g_zones = [_]Zone {
-    Zone{ .fields = .{ 3, 0, 4 } },
-    Zone{ .fields = .{ 0, 4, 1 } },
-    Zone{ .fields = .{ 4, 1, 5 } },
-    Zone{ .fields = .{ 1, 5, 2 } },
-    Zone{ .fields = .{ 5, 2, 6 } },
-    Zone{ .fields = .{ 7, 3, 8 } },
-    Zone{ .fields = .{ 3, 8, 4 } },
-    Zone{ .fields = .{ 8, 4, 9 } },
-    Zone{ .fields = .{ 4, 9, 5 } },
-    Zone{ .fields = .{ 9, 5, 10 } },
-    Zone{ .fields = .{ 5, 10, 6 } },
-    Zone{ .fields = .{ 10, 6, 11 } },
-    Zone{ .fields = .{ 7, 12, 8 } },
-    Zone{ .fields = .{ 12, 8, 13 } },
-    Zone{ .fields = .{ 8, 13, 9 } },
-    Zone{ .fields = .{ 13, 9, 14 } },
-    Zone{ .fields = .{ 14, 10, 15 } },
-    Zone{ .fields = .{ 10, 15, 11 } },
-    Zone{ .fields = .{ 12, 16, 13 } },
-    Zone{ .fields = .{ 16, 13, 17 } },
-    Zone{ .fields = .{ 13, 17, 14 } },
-    Zone{ .fields = .{ 17, 14, 18 } },
-    Zone{ .fields = .{ 14, 18, 15 } },
-};
-const zones_cnt = g_zones.len;
-
 fn Vec(T: type, comptime size: usize) type {
     return struct {
         a: [size]T = undefined,
@@ -273,6 +246,32 @@ const g_fields: [fields_cnt]Field = blk: {
 
 const Zone = struct {
     fields: [zone_size]u8 = undefined,
+
+    const zones = [_]@This() {
+        @This(){ .fields = .{ 3, 0, 4 } },
+        @This(){ .fields = .{ 0, 4, 1 } },
+        @This(){ .fields = .{ 4, 1, 5 } },
+        @This(){ .fields = .{ 1, 5, 2 } },
+        @This(){ .fields = .{ 5, 2, 6 } },
+        @This(){ .fields = .{ 7, 3, 8 } },
+        @This(){ .fields = .{ 3, 8, 4 } },
+        @This(){ .fields = .{ 8, 4, 9 } },
+        @This(){ .fields = .{ 4, 9, 5 } },
+        @This(){ .fields = .{ 9, 5, 10 } },
+        @This(){ .fields = .{ 5, 10, 6 } },
+        @This(){ .fields = .{ 10, 6, 11 } },
+        @This(){ .fields = .{ 7, 12, 8 } },
+        @This(){ .fields = .{ 12, 8, 13 } },
+        @This(){ .fields = .{ 8, 13, 9 } },
+        @This(){ .fields = .{ 13, 9, 14 } },
+        @This(){ .fields = .{ 14, 10, 15 } },
+        @This(){ .fields = .{ 10, 15, 11 } },
+        @This(){ .fields = .{ 12, 16, 13 } },
+        @This(){ .fields = .{ 16, 13, 17 } },
+        @This(){ .fields = .{ 13, 17, 14 } },
+        @This(){ .fields = .{ 17, 14, 18 } },
+        @This(){ .fields = .{ 14, 18, 15 } },
+    };
 
     // const zone_size = 4;
     const zone_size = 3;
@@ -519,7 +518,7 @@ fn assign_resources(fields: *[fields_cnt]Field, res_available: *[Resource.enumLe
 
 fn assign_yields(fields: *[fields_cnt]Field, 
                  yields: *const [Yield.yield_vals_cnt]Yield,
-                 zones: *const [zones_cnt]Zone) u8 {
+                 zones: *const [Zone.zones.len]Zone) u8 {
     const yields_nos = blk: {
         var a: [res_fields_cnt]u8 = undefined;
         var i: u8 = 0;
@@ -557,7 +556,7 @@ fn assign_yields(fields: *[fields_cnt]Field,
         // std.debug.print("---\n", .{});
         for (0..8) |_| {
             var zp = blk: {
-                var a: [zones_cnt]*const Zone = undefined;
+                var a: [Zone.zones.len]*const Zone = undefined;
                 for (zones, &a) |*p, *ap| ap.* = p;
                 break :blk a;
             };
@@ -646,7 +645,7 @@ pub fn main(init: std.process.Init) !void {
 
         // for (res_available) |cnt| std.debug.assert(cnt == 0);
 
-        const diff = assign_yields(&fields_copy, &g_yields, &g_zones);
+        const diff = assign_yields(&fields_copy, &g_yields, &Zone.zones);
         if (diff > max_zone_yield_diff) continue;
 
         const bal_diff = balance_res_yields(&fields_copy);
