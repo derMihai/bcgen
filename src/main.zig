@@ -245,35 +245,39 @@ const g_fields: [fields_cnt]Field = blk: {
 };
 
 const Zone = struct {
+    id: u8 = undefined,
     fields: [zone_size]u8 = undefined,
 
-    const zones = [_]@This() {
-        @This(){ .fields = .{ 3, 0, 4 } },
-        @This(){ .fields = .{ 0, 4, 1 } },
-        @This(){ .fields = .{ 4, 1, 5 } },
-        @This(){ .fields = .{ 1, 5, 2 } },
-        @This(){ .fields = .{ 5, 2, 6 } },
-        @This(){ .fields = .{ 7, 3, 8 } },
-        @This(){ .fields = .{ 3, 8, 4 } },
-        @This(){ .fields = .{ 8, 4, 9 } },
-        @This(){ .fields = .{ 4, 9, 5 } },
-        @This(){ .fields = .{ 9, 5, 10 } },
-        @This(){ .fields = .{ 5, 10, 6 } },
-        @This(){ .fields = .{ 10, 6, 11 } },
-        @This(){ .fields = .{ 7, 12, 8 } },
-        @This(){ .fields = .{ 12, 8, 13 } },
-        @This(){ .fields = .{ 8, 13, 9 } },
-        @This(){ .fields = .{ 13, 9, 14 } },
-        @This(){ .fields = .{ 14, 10, 15 } },
-        @This(){ .fields = .{ 10, 15, 11 } },
-        @This(){ .fields = .{ 12, 16, 13 } },
-        @This(){ .fields = .{ 16, 13, 17 } },
-        @This(){ .fields = .{ 13, 17, 14 } },
-        @This(){ .fields = .{ 17, 14, 18 } },
-        @This(){ .fields = .{ 14, 18, 15 } },
+    const zones = blk: {
+        var a = [_]@This() {
+            @This(){ .fields = .{ 3, 0, 4 } },
+            @This(){ .fields = .{ 0, 4, 1 } },
+            @This(){ .fields = .{ 4, 1, 5 } },
+            @This(){ .fields = .{ 1, 5, 2 } },
+            @This(){ .fields = .{ 5, 2, 6 } },
+            @This(){ .fields = .{ 7, 3, 8 } },
+            @This(){ .fields = .{ 3, 8, 4 } },
+            @This(){ .fields = .{ 8, 4, 9 } },
+            @This(){ .fields = .{ 4, 9, 5 } },
+            @This(){ .fields = .{ 9, 5, 10 } },
+            @This(){ .fields = .{ 5, 10, 6 } },
+            @This(){ .fields = .{ 10, 6, 11 } },
+            @This(){ .fields = .{ 7, 12, 8 } },
+            @This(){ .fields = .{ 12, 8, 13 } },
+            @This(){ .fields = .{ 8, 13, 9 } },
+            @This(){ .fields = .{ 13, 9, 14 } },
+            @This(){ .fields = .{ 14, 10, 15 } },
+            @This(){ .fields = .{ 10, 15, 11 } },
+            @This(){ .fields = .{ 12, 16, 13 } },
+            @This(){ .fields = .{ 16, 13, 17 } },
+            @This(){ .fields = .{ 13, 17, 14 } },
+            @This(){ .fields = .{ 17, 14, 18 } },
+            @This(){ .fields = .{ 14, 18, 15 } },
+        };
+        for (&a, 0..) |*z, i| z.id = i;
+        break :blk a;
     };
 
-    // const zone_size = 4;
     const zone_size = 3;
     const initErr = error {badNeighbors};
     const expected_yield: f32 = (@as(f32, yield_space) / res_fields_cnt) * zone_size;
@@ -290,11 +294,14 @@ const Zone = struct {
         return sum;
     }
 
-    fn more_than(fields: *const [fields_cnt]Field, lhs: *const @This(), rhs: *const @This()) bool {
-        return lhs.yield(fields) > rhs.yield(fields);
+    fn less_than(fields: *const [fields_cnt]Field, lhs: *const @This(), rhs: *const @This()) bool {
+        return lhs.yield(fields) < rhs.yield(fields);
     }
 
     fn balance(fields: *[fields_cnt]Field, za: *const @This(), zb: *const @This()) void {
+        // std.debug.print("balancing {d}({d}) and {d}({d})\n", 
+        //     .{za.id, za.yield(fields), zb.id, zb.yield(fields)});
+
         const lesser, const greater = 
             if (za.yield(fields) <= zb.yield(fields)) .{ za, zb } else .{ zb, za };
 
@@ -312,6 +319,34 @@ const Zone = struct {
         const tmp = min.yield_no;
         min.yield_no = max.yield_no;
         max.yield_no = tmp;
+    }
+
+    fn overlap(za: *const @This(), zb: *const @This()) u8 {
+        var cnt: u8 = 0;
+        for (za.fields) |fa| for (zb.fields) |fb| {
+            if (fa == fb) {
+                cnt += 1;
+                break;
+            }
+        };
+
+        return cnt;
+    }
+
+    fn overlap2(za: *const @This(), zb: *const @This()) bool {
+        @setEvalBranchQuota(10000);
+        const overlap2_mat = comptime blk: {
+            var mat: [zones.len][zones.len]bool = @splat(@splat(false));
+            for (&zones, 0..) |*zai, i| for (zones[i + 1..]) |*zbi| {
+                if (zai.overlap(zbi) == 2) {
+                    mat[zai.id][zbi.id] = true;
+                    mat[zbi.id][zai.id] = true;
+                }
+            };
+            break :blk mat;
+        };
+
+        return overlap2_mat[za.id][zb.id];
     }
 };
 
@@ -519,6 +554,26 @@ fn assign_resources(fields: *[fields_cnt]Field, res_available: *[Resource.enumLe
 fn assign_yields(fields: *[fields_cnt]Field, 
                  yields: *const [Yield.yield_vals_cnt]Yield,
                  zones: *const [Zone.zones.len]Zone) u8 {
+    const Outliers = struct {
+        fn non_overlap2(zl: [Zone.zones.len]*const Zone, flds: *[fields_cnt]Field ) struct {*const Zone, *const Zone} {
+            const minl = for (1..zl.len) |i| {
+                if (zl[i].yield(flds) > zl[0].yield(flds)) break zl[0..i];
+            } else {
+                unreachable;
+            };
+            const maxl = for (1..zl.len) |i| {
+                if (zl[i].yield(flds) == zl[zl.len - 1].yield(flds)) break zl[i..zl.len];
+            } else {
+                unreachable;
+            };
+            for (minl) |min| { 
+                for (maxl) |max| {
+                    if (!min.overlap2(max)) return .{min, max};
+                }
+            } 
+            else return .{zl[0],  zl[zl.len - 1]};
+        }
+    };
     const yields_nos = blk: {
         var a: [res_fields_cnt]u8 = undefined;
         var i: u8 = 0;
@@ -554,24 +609,31 @@ fn assign_yields(fields: *[fields_cnt]Field,
         }
 
         // std.debug.print("---\n", .{});
-        for (0..8) |_| {
+        for (0..16) |_| {
             var zp = blk: {
                 var a: [Zone.zones.len]*const Zone = undefined;
                 for (zones, &a) |*p, *ap| ap.* = p;
                 break :blk a;
             };
 
-            std.sort.block(*const Zone, &zp, fields, Zone.more_than);
+            std.sort.block(*const Zone, &zp, fields, Zone.less_than);
 
             // for (zp) |z| std.debug.print("{d}, ", .{ z.yield(fields) });
             // std.debug.print("\n", .{});
+            var zmin = zp[0];
+            var zmax = zp[zp.len - 1];
 
-            diff = @intCast(@as(i16, zp[0].yield(fields)) - zp[zp.len - 1].yield(fields));
+            diff = @intCast(@as(i16, zmax.yield(fields)) - zmin.yield(fields));
             if (diff <= max_zone_yield_diff) {
                 break :shuffle;
             }
 
-            Zone.balance(fields, zp[0], zp[zp.len-1]);
+            if (zmin.overlap2(zmax)) std.debug.print("zones {d} and {d} overlap\n",
+                .{zmin.id, zmax.id});
+
+            zmin, zmax = Outliers.non_overlap2(zp, fields);
+
+            Zone.balance(fields, zmin, zmax);
         }
     } 
 
